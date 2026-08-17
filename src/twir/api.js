@@ -5,7 +5,7 @@ export class Api extends FrankerFaceZ.utilities.module.Module {
 		this.inject(Commands);
 		this.inject(Badges);
 
-		this.apiBase = 'https://twir.app/api/v1/public';
+		this.apiBase = 'https://twir.app/api/';
 	}
 
 	async request(path) {
@@ -23,15 +23,15 @@ export class Api extends FrankerFaceZ.utilities.module.Module {
 }
 
 export class Commands extends FrankerFaceZ.utilities.module.Module {
-	// https://twir.app/api/v1/public/channels/{userId}/commands
+	// https://twir.app/api/v2/public/channels/twitch/{userId}/commands
 	getChannelCommands(userId) {
-		return this.parent.request(`channels/${userId}/commands`);
+		return this.parent.request(`v2/public/channels/twitch/${userId}/commands`);
 	}
 }
 
 export class Badges extends FrankerFaceZ.utilities.module.Module {
 	// https://twir.app/api/v1/public/badges
 	getBadges() {
-		return this.parent.request('badges');
+		return this.parent.request('v1/public/badges');
 	}
 }
