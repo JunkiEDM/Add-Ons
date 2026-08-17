@@ -21,6 +21,8 @@ function getSearchLinks(game) {
 	const encoded = encodeURIComponent(game);
 
 	return {
+		steam: `https://store.steampowered.com/search/?term=${encoded}`,
+		steamDB: `https://steamdb.info/search/?a=app&q=${encoded}`,
 		epic: `https://store.epicgames.com/en-US/browse?q=${encoded}&sortBy=relevancy&sortDir=DESC&count=40`,
 		itch: `https://itch.io/search?q=${encoded}`
 	};
@@ -62,6 +64,7 @@ class GameStoreLinks extends Addon {
 		this.injectStyle();
 		this.observer = new MutationObserver(this.handleMutations);
 		this.observer.observe(document.body, {
+			characterData: true,
 			childList: true,
 			subtree: true
 		});
@@ -96,8 +99,18 @@ class GameStoreLinks extends Addon {
 	}
 
 	scan() {
-		for(const anchor of document.querySelectorAll(`a[href^="${CATEGORY_PATH}"]:not([${PROCESSED_ATTR}])`))
-			this.attach(anchor);
+		for(const wrapper of document.querySelectorAll(`.${LINK_CLASS}`))
+			this.refreshWrapper(wrapper);
+
+		for(const anchor of document.querySelectorAll(`a[href^="${CATEGORY_PATH}"]:not([${PROCESSED_ATTR}])`)) {
+			const wrapper = anchor.closest(`.${LINK_CLASS}`);
+
+			if ( wrapper ) {
+				anchor.setAttribute(PROCESSED_ATTR, 'true');
+				this.refreshWrapper(wrapper);
+			} else
+				this.attach(anchor);
+		}
 
 		this.attachDirectoryTitle();
 	}
@@ -112,6 +125,7 @@ class GameStoreLinks extends Addon {
 		const wrapper = createElement('span', {
 			className: LINK_CLASS
 		});
+		wrapper.dataset.game = game;
 
 		anchor.parentNode?.insertBefore(wrapper, anchor);
 		wrapper.appendChild(anchor);
@@ -119,14 +133,35 @@ class GameStoreLinks extends Addon {
 		const popup = this.buildPopup(game);
 		wrapper.appendChild(popup);
 
-		wrapper.addEventListener('mouseenter', () => this.populatePopup(popup, game), { passive: true });
+		wrapper.addEventListener('mouseenter', () => this.refreshWrapper(wrapper, true), { passive: true });
+	}
+
+	refreshWrapper(wrapper, populate = false) {
+		const anchor = wrapper.querySelector(`a[href^="${CATEGORY_PATH}"]`);
+		const game = anchor && getAnchorGameName(anchor);
+		if ( ! game )
+			return;
+
+		anchor.setAttribute(PROCESSED_ATTR, 'true');
+
+		let popup = wrapper.querySelector(`.${POPUP_CLASS}`);
+
+		if ( wrapper.dataset.game !== game || ! popup ) {
+			const nextPopup = this.buildPopup(game);
+			popup?.replaceWith(nextPopup);
+			popup = nextPopup;
+			wrapper.dataset.game = game;
+		}
+
+		if ( populate )
+			this.populatePopup(popup, game);
 	}
 
 	attachDirectoryTitle() {
 		if ( ! location.pathname.startsWith(CATEGORY_PATH) )
 			return;
 
-		const heading = document.querySelector(`main h1:not([${PROCESSED_ATTR}]), h1:not([${PROCESSED_ATTR}])`);
+		const heading = document.querySelector('main h1, h1');
 		const game = heading?.textContent?.trim();
 
 		if ( ! heading || ! game )
@@ -134,9 +169,22 @@ class GameStoreLinks extends Addon {
 
 		heading.setAttribute(PROCESSED_ATTR, 'true');
 
-		const row = this.buildTitleLinks(game);
-		heading.insertAdjacentElement('afterend', row);
-		this.populateTitleLinks(row, game);
+		let row = heading.nextElementSibling?.classList.contains(TITLE_CLASS)
+			? heading.nextElementSibling
+			: null;
+
+		if ( ! row || row.dataset.game !== game ) {
+			const nextRow = this.buildTitleLinks(game);
+			nextRow.dataset.game = game;
+
+			if ( row )
+				row.replaceWith(nextRow);
+			else
+				heading.insertAdjacentElement('afterend', nextRow);
+
+			row = nextRow;
+			this.populateTitleLinks(row, game);
+		}
 	}
 
 	unwrapAnchor(wrapper) {
@@ -158,7 +206,8 @@ class GameStoreLinks extends Addon {
 		}, createElement('span', {
 			className: 'ffz-game-store-links__stores'
 		}, [
-			makeStoreLink('Steam', `https://store.steampowered.com/search/?term=${encodeURIComponent(game)}`, 'ffz-game-store-links__steam-search'),
+			makeStoreLink('Steam', search.steam, 'ffz-game-store-links__steam-search'),
+			makeStoreLink('SteamDB', search.steamDB, 'ffz-game-store-links__steamdb-search'),
 			makeStoreLink('Epic', search.epic),
 			makeStoreLink('itch.io', search.itch)
 		]));
@@ -172,7 +221,8 @@ class GameStoreLinks extends Addon {
 		}, createElement('span', {
 			className: 'ffz-game-store-links__stores'
 		}, [
-			makeStoreLink('Steam', `https://store.steampowered.com/search/?term=${encodeURIComponent(game)}`, 'ffz-game-store-links__steam-search'),
+			makeStoreLink('Steam', search.steam, 'ffz-game-store-links__steam-search'),
+			makeStoreLink('SteamDB', search.steamDB, 'ffz-game-store-links__steamdb-search'),
 			makeStoreLink('Epic', search.epic),
 			makeStoreLink('itch.io', search.itch)
 		]));
@@ -182,31 +232,38 @@ class GameStoreLinks extends Addon {
 		if ( popup.dataset.loaded )
 			return;
 
-		const steamSearch = popup.querySelector('.ffz-game-store-links__steam-search');
-
 		try {
 			const result = await this.findSteamGame(game);
 			popup.dataset.loaded = 'true';
 
 			if ( result )
-				steamSearch.replaceWith(makeStoreLink('Steam', result.url, 'ffz-game-store-links__steam'));
+				this.replaceSteamLinks(popup, result);
 		} catch(err) {
-			this.log.warn('Unable to search Steam for game store links.', err);
+			this.log.warn('Unable to resolve Steam links for game store links.', err);
 			popup.dataset.loaded = 'true';
 		}
 	}
 
 	async populateTitleLinks(row, game) {
-		const steamSearch = row.querySelector('.ffz-game-store-links__steam-search');
-
 		try {
 			const result = await this.findSteamGame(game);
 
 			if ( result )
-				steamSearch.replaceWith(makeStoreLink('Steam', result.url, 'ffz-game-store-links__steam'));
+				this.replaceSteamLinks(row, result);
 		} catch(err) {
-			this.log.warn('Unable to search Steam for game directory links.', err);
+			this.log.warn('Unable to resolve Steam links for game directory links.', err);
 		}
+	}
+
+	replaceSteamLinks(container, result) {
+		if ( ! container?.isConnected )
+			return;
+
+		const steamSearch = container.querySelector('.ffz-game-store-links__steam-search');
+		const steamDBSearch = container.querySelector('.ffz-game-store-links__steamdb-search');
+
+		steamSearch?.replaceWith(makeStoreLink('Steam', result.url, 'ffz-game-store-links__steam'));
+		steamDBSearch?.replaceWith(makeStoreLink('SteamDB', result.steamDB, 'ffz-game-store-links__steamdb'));
 	}
 
 	async findSteamGame(game) {
@@ -219,7 +276,7 @@ class GameStoreLinks extends Addon {
 		if ( this.pending.has(key) )
 			return this.pending.get(key);
 
-		const promise = this.searchSteam(game, key);
+		const promise = this.searchGameCatalog(game, key);
 		this.pending.set(key, promise);
 
 		try {
@@ -235,25 +292,29 @@ class GameStoreLinks extends Addon {
 		}
 	}
 
-	async searchSteam(game, normalized) {
-		const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(game)}&l=en&cc=us`;
+	async searchGameCatalog(game, normalized) {
+		const url = `https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(game)}&limit=10`;
 		const response = await fetch(url, {
 			credentials: 'omit'
 		});
 
 		if ( ! response.ok )
-			throw new Error(`Steam search failed: ${response.status}`);
+			throw new Error(`Game catalog search failed: ${response.status}`);
 
 		const data = await response.json();
-		const items = Array.isArray(data?.items) ? data.items : [];
-		const exact = items.find(item => normalizeGameName(item?.name) === normalized);
+		const items = Array.isArray(data) ? data : [];
+		const exact = items.find(item =>
+			item?.steamAppID && normalizeGameName(item.external) === normalized
+		);
 
-		if ( ! exact?.id )
+		if ( ! exact?.steamAppID )
 			return null;
 
 		return {
-			name: exact.name,
-			url: `https://store.steampowered.com/app/${exact.id}/`
+			id: exact.steamAppID,
+			name: exact.external,
+			url: `https://store.steampowered.com/app/${exact.steamAppID}/`,
+			steamDB: `https://steamdb.info/app/${exact.steamAppID}/`
 		};
 	}
 
@@ -268,8 +329,8 @@ class GameStoreLinks extends Addon {
 				position: relative;
 				display: inline-flex;
 				align-items: center;
-				padding-bottom: 0.55rem;
-				margin-bottom: -0.55rem;
+				padding: 0 0.75rem 1rem;
+				margin: 0 -0.75rem -1rem;
 			}
 
 			.${TITLE_CLASS} {
@@ -288,7 +349,7 @@ class GameStoreLinks extends Addon {
 				left: 0;
 				display: none;
 				min-width: max-content;
-				padding: 0.5rem;
+				padding: 0.7rem;
 				border-radius: 0.4rem;
 				background: #18181b;
 				box-shadow: 0 0.4rem 1rem rgba(0, 0, 0, 0.35);
